@@ -19,6 +19,13 @@ add_custom_target(
     SOURCES sentry.c
 )
 
+add_custom_target(
+    clean-module
+    ${CMAKE_MAKE_PROGRAM} -C /lib/modules/${KVERSION}/build M=${CMAKE_CURRENT_SOURCE_DIR} clean
+    DEPENDS Kbuild.in
+    SOURCES sentry.c
+)
+
 find_package (
     Boost REQUIRED
     COMPONENTS system
