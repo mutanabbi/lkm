@@ -97,18 +97,22 @@ void foo(const char* filename)
   struct iovec iov;
   mm_segment_t oldfs;
 
-  strcpy(str, filename);
+  strncpy(str, filename, MAX);
 
   retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
   printk("socket create rc: %d\n", retval);
+  if (retval)
+    return;
 
   // connect
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strcpy(addr.sun_path, SOCK_PATH);
+  strncpy(addr.sun_path, SOCK_PATH, UNIX_PATH_MAX);
 
-  retval = sock->ops->connect(sock, (struct sockaddr *)&addr, sizeof(addr), 0);
+  retval = sock->ops->connect(sock, (struct sockaddr *)&addr, sizeof(addr) - 1, 0);
   printk("socket connect rc: %d\n", retval);
+  if (retval)
+    return;
 
   // recvmsg
 
@@ -130,8 +134,12 @@ void foo(const char* filename)
 
   retval = sock_sendmsg(sock, &msg, strlen(str) + 1);
   printk("socket send rc: %d\n", retval);
+  if (retval)
+    return;
   retval = sock_recvmsg(sock, &msg, strlen(str) + 1, 0);
   printk("socket receive rc: %d\n", retval);
+  if (retval)
+    return;
 
   set_fs(oldfs);
 
