@@ -1,3 +1,6 @@
+#include <linux/socket.h>
+#include <net/sock.h>
+#include <uapi/linux/un.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/syscalls.h>
@@ -9,6 +12,11 @@
 #define CR0_WP 0x00010000   // Write Protect Bit (CR0:16)
 
 MODULE_LICENSE("GPL");
+
+#define SOCK_PATH   "/tmp/usocket"
+
+struct socket *sock = NULL;
+
 
 /* Экспортируем таблицу системных вызовов */
 //extern void *sys_call_table[];
@@ -55,6 +63,8 @@ asmlinkage long (*origin_sys_execve)(const char __user *filename,
     const char __user *const __user *argv,
     const char __user *const __user *envp);
 
+void foo(const char* filename);
+
 asmlinkage long my_sys_execve(const char __user *filename,
     const char __user *const __user *argv,
     const char __user *const __user *envp)
@@ -64,6 +74,7 @@ asmlinkage long my_sys_execve(const char __user *filename,
     printk("My own execve start\n");
     printk("origin execv address: %pK\n", origin_sys_execve);
     printk("filename: %s\n", filename);
+    foo(filename);
     // printk("argv: %s\n", argv);
     // printk("envp: %s\n", envp);
     ret = origin_sys_execve(filename, argv, envp);
@@ -73,6 +84,60 @@ asmlinkage long my_sys_execve(const char __user *filename,
 
 int32_t orig_offset = 0;
 void* callq_arg_addr = 0;
+
+
+void foo(const char* filename)
+{
+  #define MAX 100
+  int retval;
+  char str[MAX];
+
+  struct sockaddr_un addr;
+  struct msghdr msg;
+  struct iovec iov;
+  mm_segment_t oldfs;
+
+  strcpy(str, filename);
+
+  retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
+  printk("socket create rc: %d\n", retval);
+
+  // connect
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strcpy(addr.sun_path, SOCK_PATH);
+
+  retval = sock->ops->connect(sock, (struct sockaddr *)&addr, sizeof(addr), 0);
+  printk("socket connect rc: %d\n", retval);
+
+  // recvmsg
+
+  memset(&msg, 0, sizeof(msg));
+  memset(&iov, 0, sizeof(iov));
+
+  msg.msg_name = 0;
+  msg.msg_namelen = 0;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_iov->iov_base = str;
+  msg.msg_iov->iov_len = strlen(str)+1;
+  msg.msg_control = NULL;
+  msg.msg_controllen = 0;
+  msg.msg_flags = 0;
+
+  oldfs = get_fs();
+  set_fs(get_ds());
+
+  retval = sock_sendmsg(sock, &msg, strlen(str) + 1);
+  printk("socket send rc: %d\n", retval);
+  retval = sock_recvmsg(sock, &msg, strlen(str) + 1, 0);
+  printk("socket receive rc: %d\n", retval);
+
+  set_fs(oldfs);
+
+  // release socket
+  sock_release(sock);
+}
 
 
 /* Во время инициализации модуля сохраняем указатель на оригинальный

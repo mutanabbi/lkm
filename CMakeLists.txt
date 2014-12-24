@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 2.6)
-cmake_policy(SET CMP0048 NEW)
 project(
     sentry-module
-    VERSION 0.0.1
     LANGUAGES C CXX
 )
 
