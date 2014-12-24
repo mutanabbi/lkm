@@ -1,8 +1,5 @@
 cmake_minimum_required(VERSION 2.6)
-project(
-    sentry-module
-    LANGUAGES C CXX
-)
+project(sentry-module C CXX)
 
 # Dependencies
 find_package(Threads REQUIRED)
