@@ -54,8 +54,7 @@ asmlinkage long my_sys_execve(
     // printk("argv: %s\n", argv);
     // printk("envp: %s\n", envp);
     printk(is_permitted ? "Permit\n" : "Deny\n");
-    /// \todo permitt or not
-    ret = origin_sys_execve(filename, argv, envp);
+    ret = is_permitted ? origin_sys_execve(filename, argv, envp) : -1;
     printk("My own execve stop\n");
     return ret;
 }
