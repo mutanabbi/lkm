@@ -1,6 +1,4 @@
 find_library(CRYPTOPP crypto++ /usr/lib)
-find_package(OpenSSL)
-#FIND_LIBRARY(OPENSSL openssl /usr/lib)
 
 add_executable(sha256-crypt sha256-crypt.cpp)
 target_link_libraries(sha256-crypt ${CRYPTOPP})

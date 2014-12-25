@@ -21,8 +21,7 @@ int main(int argc, char* argv[])
 
         static const size_t SZ = 1024;
         char buf[SZ];
-        std::ifstream file(argv[1], std::ios::in | std::ios::binary | std::ios::ate);
-        file.seekg(0, file.beg);
+        std::ifstream file(argv[1], std::ios::in | std::ios::binary);
         if (!file.is_open())
         {
             std::cerr << "Can't open file: " << argv[1] << std::endl;
