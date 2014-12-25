@@ -39,6 +39,13 @@ include_directories(${Boost_INCLUDE_DIRS})
 
 add_executable(daemon daemon.cpp)
 target_link_libraries(daemon ${Boost_SYSTEM_LIBRARY})
+# Supress wrong format string warning (I use boost::format notation)
+set_target_properties(daemon PROPERTIES COMPILE_FLAGS "-Wno-format-security")
+
+# Build test apps if necessary
+if (TESTS)
+    add_subdirectory(tests)
+endif()
 
 # Clean targets
 add_custom_target(
