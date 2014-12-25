@@ -20,7 +20,7 @@ if (RET)
     message (FATAL_ERROR "Can't perform `uname -r' command")
 endif ()
 
-foreach (CMD "rmmod" "dmesg")
+foreach (CMD "ps" "sudo" "rmmod" "dmesg")
     execute_process (COMMAND which ${CMD} OUTPUT_VARIABLE ${CMD}_LOCATION RESULT_VARIABLE RET OUTPUT_STRIP_TRAILING_WHITESPACE)
     if (RET)
         foreach (NAME "/sbin" "/bin" "/usr/sbin" "/usr/bin")
