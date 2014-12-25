@@ -1,5 +1,4 @@
 #include <openssl/sha.h>
-#include <iostream>
 #include <fstream>
 #include <stdexcept>
 
@@ -15,7 +14,7 @@ std::string hash(const std::string& filename)
 
     static const size_t SZ = 1024;
     char buf[SZ];
-    std::ifstream file(filename, std::ios::in | std::ios::binary | std::ios::ate);
+    std::ifstream file(filename, std::ios::in | std::ios::binary);
     if (!file.is_open())
         throw std::runtime_error("Can't open file");
 

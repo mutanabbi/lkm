@@ -180,25 +180,43 @@ private:
 
 int main()
 {
-    // Sure, config file name should be an option or something on a production server
-    std::ifstream config_file("daemon.cfg", std::ios::in | std::ios::ate);
-    std::string line;
-    while (std::getline(config_file, line))
-        try
-        {
-            if (! line.empty() && '#' != line[0])
-                s_name2hash_map[line] = sentry::hash(line);
-        }
-        catch (const std::runtime_error& ex)
-        {
-            std::cerr << str(boost::format("Passing line `%1%' because of error: %2%") % line % ex.what()) << std::endl;
-        }
-
-    if (!config_file.eof() && config_file.fail())
     {
-        std::cerr << "Unexpected error during processing config file" << std::endl;
-        return 1;
+        // Sure, config file name should be an option or something on a production server
+        static const std::string CONFIG_FILE_NAME("daemon.cfg");
+        std::ifstream config_file(CONFIG_FILE_NAME, std::ios::in);
+        if (!config_file.is_open())
+        {
+            std::cerr << "Can't open file: " << CONFIG_FILE_NAME << std::endl;
+            return 1;
+        }
+        std::string line;
+        while (std::getline(config_file, line))
+            try
+            {
+                if (! line.empty() && '#' != line[0])
+                    s_name2hash_map[line] = sentry::hash(line);
+            }
+            catch (const std::runtime_error& ex)
+            {
+                std::cerr << str(boost::format("Passing line `%1%' because of error: %2%") % line % ex.what()) << std::endl;
+            }
+
+        if (!config_file.eof() && config_file.fail())
+        {
+            std::cerr << "Unexpected error during processing config file" << std::endl;
+            return 1;
+        }
     }
+
+    /* DEBUG ONLY
+    for (const auto& v : s_name2hash_map)
+    {
+        std::cout << v.first << " : ";
+        for (const auto c : v.second)
+            std::cout << std::hex << static_cast<int>(*reinterpret_cast<const unsigned char*>(&c)) << " ";
+        std::cout << std::endl;
+    }
+    */
 
     try
     {
