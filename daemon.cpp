@@ -1,26 +1,51 @@
+// project specific headers
+#include <hash.h>
+
+// standard headers
 #include <boost/asio/io_service.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio.hpp>
 #include <boost/format.hpp>
 #include <memory>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <array>
 #include <functional>
+#include <stdexcept>
+
+// system headers
 #include <syslog.h>
 #include <unistd.h>
 
+
 namespace {
 const std::string SOCK_PATH = "/tmp/usocket";
-}
+
+typedef std::map<std::string, std::string> name2hash_map_type;
+name2hash_map_type s_name2hash_map;                         // static map
+
+}                                                           // anonymous namespace
+
+
+namespace sentry {
 
 using boost::asio::local::stream_protocol;
 
 class session : public std::enable_shared_from_this<session>
 {
+    // The socket used to communicate with the client.
+    stream_protocol::socket socket_;
+
+    // Buffer used to store data received from the client.
+    std::array<char, 1024> data_;
+
+    const name2hash_map_type& m_name2hash_map;              // avoid accidental changes in global map
+
 public:
     session(boost::asio::io_service& io_service)
       : socket_(io_service)
+      , m_name2hash_map(s_name2hash_map)
     {
     }
 
@@ -36,8 +61,8 @@ public:
           , std::bind(
                 &session::handle_read
               , shared_from_this()
-              , std::placeholders::_1 // error
-              , std::placeholders::_2 // bytes transfered
+              , std::placeholders::_1                       // error
+              , std::placeholders::_2                       // bytes transfered
             )
         );
     }
@@ -46,20 +71,45 @@ public:
     {
         if (!error)
         {
-
-            syslog (
+            std::string filename(data_.data());
+            syslog(
                 LOG_INFO | LOG_USER
               , str(
-                    boost::format("received %1% bytes: %2%") % bytes_transferred % std::string(data_.data())
+                    boost::format("received %1% bytes: %2%") % bytes_transferred % filename
                 ).c_str()
             );
+            bool is_permitted = false;
+            const auto& it = m_name2hash_map.find(filename);
+            if (it != m_name2hash_map.end())
+                try
+                {
+                    // check file was not changed after daemon start
+                    if (! (is_permitted = it->second == hash(filename)))
+                        syslog(
+                            LOG_INFO | LOG_USER
+                          , str(boost::format("file `%1%' was changed after daemon start") % filename).c_str()
+                        );
+                }
+                catch (const std::runtime_error& ex)
+                {
+                    syslog(
+                        LOG_ERR | LOG_USER
+                      , str(boost::format("error during processing `%1%': %2%") % filename % ex.what()).c_str()
+                    );
+                }
+            else
+                syslog(
+                    LOG_INFO | LOG_USER
+                  , str(boost::format("file `%1%' isn't in whitelist") % filename).c_str()
+                );
+
             boost::asio::async_write(
                 socket_
-              , boost::asio::buffer("Hello world!")
+              , boost::asio::buffer(is_permitted ? "Y" : "N")
               , std::bind(
                     &session::handle_write
                   , shared_from_this()
-                  , std::placeholders::_1 // error
+                  , std::placeholders::_1                   // error
                 )
             );
         }
@@ -74,19 +124,12 @@ public:
               , std::bind(
                     &session::handle_read
                   , shared_from_this()
-                  , std::placeholders::_1 // error
-                  , std::placeholders::_2 // bytes transfered
+                  , std::placeholders::_1                   // error
+                  , std::placeholders::_2                   // bytes transfered
                 )
             );
         }
     }
-
-private:
-    // The socket used to communicate with the client.
-    stream_protocol::socket socket_;
-
-    // Buffer used to store data received from the client.
-    std::array<char, 1024> data_;
 };
 
 typedef std::shared_ptr<session> session_ptr;
@@ -105,7 +148,7 @@ public:
                 &server::handle_accept
               , this
               , new_session
-              , std::placeholders::_1 // error
+              , std::placeholders::_1                       // error
             )
         );
     }
@@ -122,7 +165,7 @@ public:
                     &server::handle_accept
                   , this
                   , new_session
-                  , std::placeholders::_1 // error
+                  , std::placeholders::_1                   // error
                 )
             );
         }
@@ -133,8 +176,30 @@ private:
     stream_protocol::acceptor acceptor_;
 };
 
+}                                                           // namespace sentry
+
 int main()
 {
+    // Sure, config file name should be an option or something on a production server
+    std::ifstream config_file("daemon.cfg", std::ios::in | std::ios::ate);
+    std::string line;
+    while (std::getline(config_file, line))
+        try
+        {
+            if (! line.empty() && '#' != line[0])
+                s_name2hash_map[line] = sentry::hash(line);
+        }
+        catch (const std::runtime_error& ex)
+        {
+            std::cerr << str(boost::format("Passing line `%1%' because of error: %2%") % line % ex.what()) << std::endl;
+        }
+
+    if (!config_file.eof() && config_file.fail())
+    {
+        std::cerr << "Unexpected error during processing config file" << std::endl;
+        return 1;
+    }
+
     try
     {
         boost::asio::io_service io_service;
@@ -247,7 +312,7 @@ int main()
 
         // The io_service can now be used normally.
         syslog(LOG_INFO | LOG_USER, "Daemon started");
-        server s(io_service, SOCK_PATH);
+        sentry::server s(io_service, SOCK_PATH);
         io_service.run();
         syslog(LOG_INFO | LOG_USER, "Daemon stopped");
     }
@@ -256,4 +321,4 @@ int main()
         syslog(LOG_ERR | LOG_USER, "Exception: %s", e.what());
         std::cerr << "Exception: " << e.what() << std::endl;
     }
-}
+}                                                           // main()

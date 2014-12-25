@@ -35,7 +35,7 @@ asmlinkage long (*origin_sys_execve)(
 );
 
 
-void foo(const char* filename);
+bool foo(const char* filename);
 
 
 asmlinkage long my_sys_execve(
@@ -46,12 +46,15 @@ asmlinkage long my_sys_execve(
 {
 
     long ret = 0;
+    bool is_permitted = false;
     printk("My own execve start\n");
     printk("origin execv address: %pK\n", origin_sys_execve);
     printk("filename: %s\n", filename);
-    foo(filename);
+    is_permitted = foo(filename);
     // printk("argv: %s\n", argv);
     // printk("envp: %s\n", envp);
+    printk(is_permitted ? "Permit\n" : "Deny\n");
+    /// \todo permitt or not
     ret = origin_sys_execve(filename, argv, envp);
     printk("My own execve stop\n");
     return ret;
@@ -62,7 +65,7 @@ int32_t orig_offset = 0;
 void* callq_arg_addr = 0;
 
 
-void foo(const char* filename)
+bool foo(const char* filename)
 {
     #define MAX 100
     #define SOCK_PATH "/tmp/usocket"
@@ -83,7 +86,7 @@ void foo(const char* filename)
     retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
     printk("socket create rc: %d\n", retval);
     if (retval < 0)
-        return;
+        return false;
 
     // connect
     memset(&addr, 0, sizeof(addr));
@@ -93,7 +96,7 @@ void foo(const char* filename)
     retval = sock->ops->connect(sock, (struct sockaddr *)&addr, sizeof(addr) - 1, 0);
     printk("socket connect rc: %d\n", retval);
     if (retval < 0)
-        return;
+        return false;
 
     // sendmsg
     memset(&msg, 0, sizeof(msg));
@@ -117,7 +120,7 @@ void foo(const char* filename)
     retval = sock_sendmsg(sock, &msg, len);
     printk("socket send rc: %d\n", retval);
     if (retval < 0)
-        return;
+        return false;
 
     // recvmsg
     memset(&buf, 0, sizeof(buf));
@@ -125,7 +128,7 @@ void foo(const char* filename)
     retval = sock_recvmsg(sock, &msg, MAX, 0);
     printk("socket receive rc: %d\n", retval);
     if (retval < 0)
-        return;
+        return false;
 
     set_fs(oldfs);
 
@@ -133,6 +136,7 @@ void foo(const char* filename)
     printk("received: %s\n", buf);
 
     sock_release(sock);
+    return 0 == strncmp("Y", buf, MAX);
 }
 
 

@@ -7,6 +7,7 @@ find_package (
     Boost REQUIRED
     COMPONENTS system
 )
+find_package(OpenSSL REQUIRED)
 
 if (NOT Boost_FOUND)
   message (FATAL_ERROR "Required Boost libraries not found. Please get a copy from http://www.boost.org")
@@ -15,9 +16,25 @@ endif ()
 # Necessary variables and system info
 set(CMAKE_CXX_FLAGS "-pipe --std=c++11 -pthread ${CMAKE_CXX_FLAGS}")
 execute_process(COMMAND uname -r OUTPUT_VARIABLE KVERSION RESULT_VARIABLE RET OUTPUT_STRIP_TRAILING_WHITESPACE)
-if (${RET})
+if (RET)
     message(FATAL_ERROR "Can't perform `uname -r' command")
 endif ()
+execute_process(COMMAND which rmmod OUTPUT_VARIABLE RMMOD_LOCATION RESULT_VARIABLE RET OUTPUT_STRIP_TRAILING_WHITESPACE)
+if (RET)
+    foreach (NAME "/sbin" "/bin" "/usr/sbin" "/usr/bin")
+        execute_process(
+            COMMAND find ${NAME} -name rmmod
+            OUTPUT_VARIABLE RMMOD_LOCATION RESULT_VARIABLE RET OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if (NOT RET)
+            break()
+        endif()
+    endforeach()
+    if (NOT RMMOD_LOCATION)
+        set(RMMOD_LOCATION "# CMake didn't find rmmod location")
+    endif()
+endif()
+
 
 # Build module
 set(SENTRY_SOURCE_FILES sentry.c)
@@ -36,9 +53,10 @@ endforeach()
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_BINARY_DIR})
 include_directories(${Boost_INCLUDE_DIRS})
+configure_file(daemon.cfg.in ${CMAKE_BINARY_DIR}/daemon.cfg)
 
-add_executable(daemon daemon.cpp)
-target_link_libraries(daemon ${Boost_SYSTEM_LIBRARY})
+add_executable(daemon daemon.cpp hash.cpp hash.h)
+target_link_libraries(daemon ${Boost_SYSTEM_LIBRARY} ${OPENSSL_LIBRARIES})
 # Supress wrong format string warning (I use boost::format notation)
 set_target_properties(daemon PROPERTIES COMPILE_FLAGS "-Wno-format-security")
 
