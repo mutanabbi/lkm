@@ -55,7 +55,7 @@ public:
             );
             boost::asio::async_write(
                 socket_
-              , boost::asio::buffer(data_, bytes_transferred)
+              , boost::asio::buffer("Hello world!")
               , std::bind(
                     &session::handle_write
                   , shared_from_this()

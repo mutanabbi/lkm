@@ -1,36 +1,23 @@
 #include <linux/socket.h>
-#include <net/sock.h>
-#include <uapi/linux/un.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/syscalls.h>
 #include <linux/delay.h>
-//#include <linux/string.h>
-#include <asm/cacheflush.h>
+#include <linux/string.h>
 #include <linux/types.h>
-
-#define CR0_WP 0x00010000   // Write Protect Bit (CR0:16)
+#include <net/sock.h>
+#include <uapi/linux/un.h>
+#include <asm/cacheflush.h>
 
 MODULE_LICENSE("GPL");
 
-#define SOCK_PATH   "/tmp/usocket"
-
-struct socket *sock = NULL;
-
-
-/* Экспортируем таблицу системных вызовов */
-//extern void *sys_call_table[];
-void** sys_call_table;
+#define CR0_WP 0x00010000   // Write Protect Bit (CR0:16)
 
 void **find_sys_call_table(void) {
     void* ptr = sys_close;
-
-    for (;
-         ptr < (void*)&loops_per_jiffy;
-         ++ptr
-      )
+    for ( ; ptr < (void*)&loops_per_jiffy; ++ptr)
     {
-        if (((void**)ptr)[__NR_close] == sys_close)
+        if (sys_close == ((void**)ptr)[__NR_close])
         {
             printk(KERN_DEBUG "Found the sys_call_table!!!\n");
             return (void **)ptr;
@@ -39,35 +26,23 @@ void **find_sys_call_table(void) {
     return NULL;
 }
 
-//unsigned long **find_sys_call_table() {
-//    unsigned long ptr;
-//    unsigned long *p;
-//
-//    for (ptr = (unsigned long)sys_close;
-//         ptr < (unsigned long)&loops_per_jiffy;
-//         ptr += sizeof(void *)) {
-//        p = (unsigned long *)ptr;
-//
-//        if (p[__NR_close] == (unsigned long)sys_close) {
-//            printk(KERN_DEBUG "Found the sys_call_table!!!\n");
-//            return (unsigned long **)p;
-//        }
-//    }
-//    return NULL;
-//}
 
-/* Определим указатель для сохранения оригинально вызова */
-//int (*orig_mkdir)(const char *path);
+// a pointer to store an original syscall
+asmlinkage long (*origin_sys_execve)(
+    const char __user *filename
+  , const char __user *const __user *argv
+  , const char __user *const __user *envp
+);
 
-asmlinkage long (*origin_sys_execve)(const char __user *filename,
-    const char __user *const __user *argv,
-    const char __user *const __user *envp);
 
 void foo(const char* filename);
 
-asmlinkage long my_sys_execve(const char __user *filename,
-    const char __user *const __user *argv,
-    const char __user *const __user *envp)
+
+asmlinkage long my_sys_execve(
+    const char __user *filename
+  , const char __user *const __user *argv
+  , const char __user *const __user *envp
+  )
 {
 
     long ret = 0;
@@ -82,74 +57,86 @@ asmlinkage long my_sys_execve(const char __user *filename,
     return ret;
 }
 
+
 int32_t orig_offset = 0;
 void* callq_arg_addr = 0;
 
 
 void foo(const char* filename)
 {
-  #define MAX 100
-  int retval;
-  char str[MAX];
+    #define MAX 100
+    #define SOCK_PATH "/tmp/usocket"
 
-  struct sockaddr_un addr;
-  struct msghdr msg;
-  struct iovec iov;
-  mm_segment_t oldfs;
+    struct socket *sock = 0;
 
-  strncpy(str, filename, MAX);
+    int retval;
+    char buf[MAX] = {0};
+    unsigned long len = 0;
 
-  retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
-  printk("socket create rc: %d\n", retval);
-  if (retval)
-    return;
+    struct sockaddr_un addr;
+    struct msghdr msg;
+    struct iovec iov;
+    mm_segment_t oldfs;
 
-  // connect
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, SOCK_PATH, UNIX_PATH_MAX);
+    strncpy(buf, filename, MAX);
 
-  retval = sock->ops->connect(sock, (struct sockaddr *)&addr, sizeof(addr) - 1, 0);
-  printk("socket connect rc: %d\n", retval);
-  if (retval)
-    return;
+    retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
+    printk("socket create rc: %d\n", retval);
+    if (retval < 0)
+        return;
 
-  // recvmsg
+    // connect
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCK_PATH, UNIX_PATH_MAX);
 
-  memset(&msg, 0, sizeof(msg));
-  memset(&iov, 0, sizeof(iov));
+    retval = sock->ops->connect(sock, (struct sockaddr *)&addr, sizeof(addr) - 1, 0);
+    printk("socket connect rc: %d\n", retval);
+    if (retval < 0)
+        return;
 
-  msg.msg_name = 0;
-  msg.msg_namelen = 0;
-  msg.msg_iov = &iov;
-  msg.msg_iovlen = 1;
-  msg.msg_iov->iov_base = str;
-  msg.msg_iov->iov_len = strlen(str)+1;
-  msg.msg_control = NULL;
-  msg.msg_controllen = 0;
-  msg.msg_flags = 0;
+    // sendmsg
+    memset(&msg, 0, sizeof(msg));
+    memset(&iov, 0, sizeof(iov));
+    len = strnlen(buf, MAX);
+    len = len < MAX ? len + 1 : MAX;
 
-  oldfs = get_fs();
-  set_fs(get_ds());
+    msg.msg_name = 0;
+    msg.msg_namelen = 0;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_iov->iov_base = buf;
+    msg.msg_iov->iov_len = len;
+    msg.msg_control = NULL;
+    msg.msg_controllen = 0;
+    msg.msg_flags = 0;
 
-  retval = sock_sendmsg(sock, &msg, strlen(str) + 1);
-  printk("socket send rc: %d\n", retval);
-  if (retval)
-    return;
-  retval = sock_recvmsg(sock, &msg, strlen(str) + 1, 0);
-  printk("socket receive rc: %d\n", retval);
-  if (retval)
-    return;
+    oldfs = get_fs();
+    set_fs(get_ds());
 
-  set_fs(oldfs);
+    retval = sock_sendmsg(sock, &msg, len);
+    printk("socket send rc: %d\n", retval);
+    if (retval < 0)
+        return;
 
-  // release socket
-  sock_release(sock);
+    // recvmsg
+    memset(&buf, 0, sizeof(buf));
+    msg.msg_iov->iov_len = MAX;
+    retval = sock_recvmsg(sock, &msg, MAX, 0);
+    printk("socket receive rc: %d\n", retval);
+    if (retval < 0)
+        return;
+
+    set_fs(oldfs);
+
+    buf[MAX - 1] = 0;
+    printk("received: %s\n", buf);
+
+    sock_release(sock);
 }
 
 
-/* Во время инициализации модуля сохраняем указатель на оригинальный
-   вызов и производим замену системного вызова */
+// Store a pointer to original syscall and replace it with my own one
 int init_module(void)
 {
     int ret = 0;
@@ -165,10 +152,9 @@ int init_module(void)
         int32_t val;
     } a;
     void* stub_execve = 0;
+    void** sys_call_table;
 
     a.val = 0;
-
-    //unsigned long i = 0;
 
     sys_call_table = find_sys_call_table();
 
@@ -178,17 +164,26 @@ int init_module(void)
     printk("stub_execv address: %pK\n", sys_call_table[__NR_execve]);
     printk("sizeof(unsigned long): %lu\n", sizeof(unsigned long));
     printk("sizeof(void*): %lu\n", sizeof(void*));
-    //printk("sys_execv address: %pK\n", sys_execve);
-    //origin_sys_execve = sys_execve;
     stub_execve = sys_call_table[__NR_execve];
-    //p = (const char*)stub_execve;
-    //while (*p++ != (char)0xe8 && n++ < 300);
-    //printk("opcode address: %pK\n", p);
-    //printk("counter: %lu\n", n);
-    //printk("opcode: %*ph\n", 1, p);
-    //printk("stub_execve code: %*ph\n", 100, (const char*)origin_sys_execve + 100);
+
+    /* dirty naive callq lookup
+    p = (const char*)stub_execve;
+    while ((const char)0xe8 != *p++ && n++ < 300);
+    printk("opcode address: %pK\n", p);
+    printk("counter: %lu\n", n);
+    printk("opcode: %*ph\n", 1, p);
+    printk("stub_execve code: %*ph\n", 100, (const char*)origin_sys_execve + 100);
+    */
+
+    // callq offset is 100. It's correct for 3.13.0, 3.17.1. For all 3.x.x I beleive
+    // If it isn't, It's necessary to implement some primitive disassebler to find
+    // callq insturction inside stub_execve
+    //
+    // I'm not pretty sure about 2.x.x kernel. May be It's just enought to rewrite a cell
+    // of the syscall table there. So it's a different policy. Any way, right now I don't
+    // have time to check it (and I don't have the binaries of 2.x.x kernel to disassemble).
     callq_addr = stub_execve + 100;
-    if (*(const char*)callq_addr != (char)0xe8)
+    if ((const char)0xe8 != *(const char*)callq_addr)
     {
         printk(KERN_DEBUG "Cannot find callq instrction by expected offset\n");
         return -1;
@@ -211,7 +206,6 @@ int init_module(void)
     cr0 = read_cr0();
     write_cr0(cr0 & ~CR0_WP);
 
-    //addr = (unsigned long)sys_call_table;
     addr = (unsigned long)callq_arg_addr;
     ret = set_memory_rw(PAGE_ALIGN(addr) - PAGE_SIZE, 3);
 
@@ -220,22 +214,20 @@ int init_module(void)
     else
         printk(KERN_DEBUG "3 pages set to rw");
 
-//    sys_call_table[__NR_execve] = my_sys_execve;
     memcpy(callq_arg_addr, &offset, sizeof(offset));
     write_cr0(cr0);
     printk("sys_execv replaced\n");
     return 0;
 }
 
-/* При выгрузке восстанавливаем оригинальный вызов */
 
+// restore original syscall at exit
 void cleanup_module(void)
 {
     unsigned long cr0;
     cr0 = read_cr0();
     write_cr0(cr0 & ~CR0_WP);
     memcpy(callq_arg_addr, &orig_offset, sizeof(orig_offset));
-//    sys_call_table[__NR_execve] = (void*)origin_sys_execve;
     write_cr0(cr0);
-    printk("sys_mkdir moved back\n");
+    printk("sys_execv moved back\n");
 }
