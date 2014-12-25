@@ -1,3 +1,4 @@
 # Sample config file
 ${CMAKE_BINARY_DIR}/daemon
-${RMMOD_LOCATION}
+${rmmod_LOCATION}
+${dmesg_LOCATION}
