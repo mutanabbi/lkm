@@ -2,5 +2,5 @@
 ${CMAKE_BINARY_DIR}/daemon
 ${sudo_LOCATION}
 ${ps_LOCATION}
-${rmmod_LOCATION}
+${kmod_LOCATION}
 ${dmesg_LOCATION}

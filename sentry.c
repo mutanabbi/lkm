@@ -40,7 +40,9 @@ asmlinkage long (*origin_sys_execve)(
 );
 
 
-bool foo(const char* filename);
+bool ask(const char* filename);
+bool connect_and_ask(struct socket*, const char* filename);
+bool path_lookup_and_ask(const char* filename);
 
 
 asmlinkage long proxy_sys_execve(
@@ -56,7 +58,7 @@ asmlinkage long proxy_sys_execve(
     printk("origin execv address: %pK\n", origin_sys_execve);
     printk("filename: %s\n", filename);
 
-    is_permitted = foo(filename);
+    is_permitted = path_lookup_and_ask(filename);
     printk(is_permitted ? "Permit\n" : "Deny\n");
     ret = is_permitted ? origin_sys_execve(filename, argv, envp) : -1;
     printk("My own execve stop\n");
@@ -68,21 +70,75 @@ int32_t orig_offset = 0;
 void* callq_arg_addr = NULL;
 
 
-// A lot of exit points in this function below. No resources acquisition, please.
-// Use proxy function-wrapper for that.
-bool foo(const char* filename)
+// Searh an absolute path by a filename and delegate call to connect_and_ask()
+// also this function is "RAII" wrapper for managing memory for a buffer,
+// what contains an absolute path name
+bool path_lookup_and_ask(const char* filename)
 {
-    #define MAX 100
-    #define SOCK_PATH "/tmp/usocket"
+    bool ret = false;
+    int retval = 0;
 
-    struct path pwd = {0};
     struct path abs = {0};
     char* dentry_buf = NULL;
     const char* abspath = NULL;
 
-    struct socket *sock = NULL;
+    // get absolute and canonical path
+    retval = user_path(filename, &abs);
 
-    int retval;
+    if (retval == -ENOENT)
+    {
+        printk("can't find file: %s\n", filename);
+        return false;
+    }
+    if (retval)
+    {
+        printk("unexpected error during file lookup: %s\n", filename);
+        return false;
+    }
+
+    dentry_buf = (char*)__get_free_page(GFP_USER);
+
+    abspath = dentry_path_raw(abs.dentry, dentry_buf, PAGE_SIZE);
+    if (ERR_PTR(-ENAMETOOLONG) != abspath)
+    {
+        printk("absolute path: %s\n", abspath);
+        ret = ask(abspath);                                 // ask permissions from user space daemon
+    }
+    else
+        printk("can't find absolute path. Looks like buffer (mem page size) isnt' big enough.\n");
+
+    free_page((unsigned long)dentry_buf);
+    return ret;
+}
+
+
+// "RAII" wrapper for managing socket creation/releasing
+bool ask(const char* filename)
+{
+    int retval = 0;
+    struct socket* sock = NULL;
+    bool ret = false;
+
+    // communication
+    retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
+    printk("socket create rc: %d\n", retval);
+    if (retval < 0)
+        return false;
+
+    ret = connect_and_ask(sock, filename);
+
+    sock_release(sock);
+    return ret;
+}
+
+
+// A lot of exit points in this function below. No resources acquisition, please.
+bool connect_and_ask(struct socket* sock, const char* filename)
+{
+    #define MAX 100
+    #define SOCK_PATH "/tmp/usocket"
+
+    int retval = 0;
     char buf[MAX] = {0};
     unsigned long len = 0;
 
@@ -90,44 +146,6 @@ bool foo(const char* filename)
     struct msghdr msg;
     struct iovec iov;
     mm_segment_t oldfs;
-
-    // get absolute path
-    if ('/' != filename[0])
-    {
-        get_fs_pwd(current->fs, &pwd);
-        printk("pwd: %s\n", pwd.dentry->d_name.name);
-
-        retval = user_path(filename, &abs);
-        if (retval == -ENOENT)
-        {
-            printk("can't find file: %s\n", filename);
-            return false;
-        }
-        if (retval)
-        {
-            printk("unexpected error during file lookup: %s\n", filename);
-            return false;
-        }
-
-        dentry_buf = (char*)__get_free_page(GFP_USER);
-        abspath = dentry_path_raw(abs.dentry, dentry_buf, PAGE_SIZE);
-        if (ERR_PTR(-ENAMETOOLONG) == abspath)
-        {
-            printk("can't find absolute path. Looks like buffer (mem page size) isnt' big enough.\n");
-            return false;
-        }
-        free_page((unsigned long)dentry_buf);
-    }
-    else
-        abspath = filename;
-
-    printk("absolute path: %s\n", abspath);
-
-    // communication
-    retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
-    printk("socket create rc: %d\n", retval);
-    if (retval < 0)
-        return false;
 
     // connect
     memset(&addr, 0, sizeof(addr));
@@ -142,42 +160,43 @@ bool foo(const char* filename)
     // sendmsg
     memset(&msg, 0, sizeof(msg));
     memset(&iov, 0, sizeof(iov));
-    len = strlen(abspath) + 1;
+    len = strlen(filename) + 1;
 
     msg.msg_name = NULL;
     msg.msg_namelen = 0;
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
-    msg.msg_iov->iov_base = (char*)abspath;                 // Dirty cast here. But I intend just send a message.
+    msg.msg_iov->iov_base = (char*)filename;                // Dirty cast here. But I intend just send a message.
                                                             // I hope, the kernel is smart ehough to not write to user buffer on sending :)
     msg.msg_iov->iov_len = len;
     msg.msg_control = NULL;
     msg.msg_controllen = 0;
     msg.msg_flags = 0;
 
-    /// \todo  Damn! Resource acquisition
+    // Damn! Resource acquisition. Be carefull. No exit points below!
     oldfs = get_fs();
     set_fs(get_ds());
 
     retval = sock_sendmsg(sock, &msg, len);
     printk("socket send rc: %d\n", retval);
+    if (!retval < 0)
+    {
+        // recvmsg
+        msg.msg_iov->iov_len = MAX;
+        msg.msg_iov->iov_base = buf;                        // And here is over, writable buffer
+
+        retval = sock_recvmsg(sock, &msg, MAX, 0);
+        printk("socket receive rc: %d\n", retval);
+    }
+
+    set_fs(oldfs);                                          // Uff, we can use exit points again
+
     if (retval < 0)
         return false;
-
-    // recvmsg
-    msg.msg_iov->iov_len = MAX;
-    msg.msg_iov->iov_base = buf;                            // And here is over, writable buffer
-    retval = sock_recvmsg(sock, &msg, MAX, 0);
-    printk("socket receive rc: %d\n", retval);
-    if (retval < 0)
-        return false;
-
-    set_fs(oldfs);
 
     buf[retval > 0 ? retval - 1 : 0] = 0;
     printk("received: %s\n", buf);
 
-    sock_release(sock);
     return 0 == strncmp("Y", buf, MAX);
 }
 
