@@ -13,6 +13,7 @@
 #include <array>
 #include <functional>
 #include <stdexcept>
+#include <cstdio>
 
 // system headers
 #include <syslog.h>
@@ -330,6 +331,7 @@ int main()
 
         // The io_service can now be used normally.
         syslog(LOG_INFO | LOG_USER, "Daemon started");
+        ::unlink(SOCK_PATH.c_str());
         sentry::server s(io_service, SOCK_PATH);
         io_service.run();
         syslog(LOG_INFO | LOG_USER, "Daemon stopped");

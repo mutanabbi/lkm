@@ -4,7 +4,11 @@
 #include <linux/syscalls.h>
 #include <linux/delay.h>
 #include <linux/string.h>
+#include <linux/fs_struct.h>
+#include <linux/path.h>
+#include <linux/dcache.h>
 #include <linux/types.h>
+#include <linux/namei.h>
 #include <net/sock.h>
 #include <uapi/linux/un.h>
 #include <asm/cacheflush.h>
@@ -12,6 +16,7 @@
 MODULE_LICENSE("GPL");
 
 #define CR0_WP 0x00010000   // Write Protect Bit (CR0:16)
+
 
 void **find_sys_call_table(void) {
     void* ptr = sys_close;
@@ -47,9 +52,11 @@ asmlinkage long my_sys_execve(
 
     long ret = 0;
     bool is_permitted = false;
+
     printk("My own execve start\n");
     printk("origin execv address: %pK\n", origin_sys_execve);
     printk("filename: %s\n", filename);
+
     is_permitted = foo(filename);
     // printk("argv: %s\n", argv);
     // printk("envp: %s\n", envp);
@@ -64,10 +71,17 @@ int32_t orig_offset = 0;
 void* callq_arg_addr = 0;
 
 
+// A lot of exit points in this function below. No resources acquisition, please.
+// Use proxy function-wrapper for that.
 bool foo(const char* filename)
 {
     #define MAX 100
     #define SOCK_PATH "/tmp/usocket"
+
+    struct path pwd = {0};
+    struct path abs = {0};
+    char* dentry_buf = 0;
+    const char* abspath = 0;
 
     struct socket *sock = 0;
 
@@ -80,8 +94,39 @@ bool foo(const char* filename)
     struct iovec iov;
     mm_segment_t oldfs;
 
-    strncpy(buf, filename, MAX);
+    // get absolute path
+    if ('/' != filename[0])
+    {
+        get_fs_pwd(current->fs, &pwd);
+        printk("pwd: %s\n", pwd.dentry->d_name.name);
 
+        retval = user_path(filename, &abs);
+        if (retval == -ENOENT)
+        {
+            printk("can't find file: %s\n", filename);
+            return false;
+        }
+        if (retval)
+        {
+            printk("unexpected error during file lookup: %s\n", filename);
+            return false;
+        }
+
+        dentry_buf = (char*)__get_free_page(GFP_USER);
+        abspath = dentry_path_raw(abs.dentry, dentry_buf, PAGE_SIZE);
+        if (ERR_PTR(-ENAMETOOLONG) == abspath)
+        {
+            printk("can't find absolute path. Looks like buffer (mem page size) isnt' big enough.\n");
+            return false;
+        }
+        free_page((unsigned long)dentry_buf);
+    }
+    else
+        abspath = filename;
+
+    printk("absolute path: %s\n", abspath);
+
+    // communication
     retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
     printk("socket create rc: %d\n", retval);
     if (retval < 0)
@@ -100,19 +145,20 @@ bool foo(const char* filename)
     // sendmsg
     memset(&msg, 0, sizeof(msg));
     memset(&iov, 0, sizeof(iov));
-    len = strnlen(buf, MAX);
-    len = len < MAX ? len + 1 : MAX;
+    len = strlen(abspath) + 1;
 
     msg.msg_name = 0;
     msg.msg_namelen = 0;
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
-    msg.msg_iov->iov_base = buf;
+    msg.msg_iov->iov_base = (char*)abspath;                 // dirty cast here. But I intend just send a message.
+                                                            // I hope, the kernel is smart ehough to not write to user buffer on sending :)
     msg.msg_iov->iov_len = len;
     msg.msg_control = NULL;
     msg.msg_controllen = 0;
     msg.msg_flags = 0;
 
+    /// \todo  Damn! Resource acquisition
     oldfs = get_fs();
     set_fs(get_ds());
 
@@ -122,8 +168,8 @@ bool foo(const char* filename)
         return false;
 
     // recvmsg
-    memset(&buf, 0, sizeof(buf));
     msg.msg_iov->iov_len = MAX;
+    msg.msg_iov->iov_base = buf;                            // and here is over, writable buffer
     retval = sock_recvmsg(sock, &msg, MAX, 0);
     printk("socket receive rc: %d\n", retval);
     if (retval < 0)
@@ -131,7 +177,7 @@ bool foo(const char* filename)
 
     set_fs(oldfs);
 
-    buf[MAX - 1] = 0;
+    buf[retval > 0 ? retval - 1 : 0] = 0;
     printk("received: %s\n", buf);
 
     sock_release(sock);
