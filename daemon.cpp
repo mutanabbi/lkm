@@ -35,30 +35,26 @@ using boost::asio::local::stream_protocol;
 
 class session : public std::enable_shared_from_this<session>
 {
-    // The socket used to communicate with the client.
-    stream_protocol::socket socket_;
-
-    // Buffer used to store data received from the client.
-    std::array<char, 1024> data_;
-
-    const name2hash_map_type& m_name2hash_map;              // avoid accidental changes in global map
+    stream_protocol::socket m_socket;                       // The socket used to communicate with the client
+    std::array<char, 1024> m_data;                          // Buffer used to store data received from the client
+    const name2hash_map_type& m_name2hash_map;              // Avoid accidental changes in global map (make it const)
 
 public:
-    session(boost::asio::io_service& io_service)
-      : socket_(io_service)
+    explicit session(boost::asio::io_service& io_service)
+      : m_socket(io_service)
       , m_name2hash_map(s_name2hash_map)
     {
     }
 
     stream_protocol::socket& socket()
     {
-        return socket_;
+        return m_socket;
     }
 
     void start()
     {
-        socket_.async_read_some(
-            boost::asio::buffer(data_)
+        m_socket.async_read_some(
+            boost::asio::buffer(m_data)
           , std::bind(
                 &session::handle_read
               , shared_from_this()
@@ -72,7 +68,7 @@ public:
     {
         if (!error)
         {
-            std::string filename(data_.data());
+            std::string filename(m_data.data());
             syslog(
                 LOG_INFO | LOG_USER
               , str(
@@ -105,7 +101,7 @@ public:
                 );
 
             boost::asio::async_write(
-                socket_
+                m_socket
               , boost::asio::buffer(is_permitted ? "Y" : "N")
               , std::bind(
                     &session::handle_write
@@ -120,8 +116,8 @@ public:
     {
         if (!error)
         {
-            socket_.async_read_some(
-                boost::asio::buffer(data_)
+            m_socket.async_read_some(
+                boost::asio::buffer(m_data)
               , std::bind(
                     &session::handle_read
                   , shared_from_this()
@@ -133,17 +129,21 @@ public:
     }
 };
 
-typedef std::shared_ptr<session> session_ptr;
 
 class server
 {
+    boost::asio::io_service& m_io_service;
+    stream_protocol::acceptor m_acceptor;
+
+    typedef std::shared_ptr<session> session_ptr;
+
 public:
     server(boost::asio::io_service& io_service, const std::string& file)
-      : io_service_(io_service)
-      , acceptor_(io_service, stream_protocol::endpoint(file))
+      : m_io_service(io_service)
+      , m_acceptor(io_service, stream_protocol::endpoint(file))
     {
-        session_ptr new_session(new session(io_service_));
-        acceptor_.async_accept(
+        session_ptr new_session(new session(m_io_service));
+        m_acceptor.async_accept(
             new_session->socket()
           , std::bind(
                 &server::handle_accept
@@ -159,8 +159,8 @@ public:
         if (!error)
         {
             new_session->start();
-            new_session.reset(new session(io_service_));
-            acceptor_.async_accept(
+            new_session.reset(new session(m_io_service));
+            m_acceptor.async_accept(
                 new_session->socket()
               , std::bind(
                     &server::handle_accept
@@ -171,19 +171,19 @@ public:
             );
         }
     }
-
-private:
-    boost::asio::io_service& io_service_;
-    stream_protocol::acceptor acceptor_;
 };
 
 }                                                           // namespace sentry
 
+
+
 int main()
 {
+    // before deemonize
     {
-        // Sure, config file name should be an option or something on a production server
+        // Sure, the name of config file should be an option in production
         static const std::string CONFIG_FILE_NAME("daemon.cfg");
+
         std::ifstream config_file(CONFIG_FILE_NAME, std::ios::in);
         if (!config_file.is_open())
         {
@@ -209,7 +209,8 @@ int main()
         }
     }
 
-    /* DEBUG ONLY
+    // Debug only. Uncomment if you need to see name-to-hash map content
+    /*
     for (const auto& v : s_name2hash_map)
     {
         std::cout << v.first << " : ";
@@ -223,41 +224,18 @@ int main()
     {
         boost::asio::io_service io_service;
 
-        // Register signal handlers so that the daemon may be shut down. You may
-        // also want to register for other signals, such as SIGHUP to trigger a
-        // re-read of a configuration file.
+        // Register signal handlers so that the daemon may be shut down.
+        // May be it's good idea to register SIGHUP in production to trigger
+        // a re-read of a configuration file.
         boost::asio::signal_set signals(io_service, SIGINT, SIGTERM);
         signals.async_wait(std::bind(&boost::asio::io_service::stop, &io_service));
 
-        // Inform the io_service that we are about to become a daemon. The
-        // io_service cleans up any internal resources, such as threads, that may
-        // interfere with forking.
         io_service.notify_fork(boost::asio::io_service::fork_prepare);
 
-        // Fork the process and have the parent exit. If the process was started
-        // from a shell, this returns control to the user. Forking a new process is
-        // also a prerequisite for the subsequent call to setsid().
         if (pid_t pid = fork())
         {
             if (pid > 0)
-            {
-                // We're in the parent process and need to exit.
-                //
-                // When the exit() function is used, the program terminates without
-                // invoking local variables' destructors. Only global variables are
-                // destroyed. As the io_service object is a local variable, this means
-                // we do not have to call:
-                //
-                //   io_service.notify_fork(boost::asio::io_service::fork_parent);
-                //
-                // However, this line should be added before each call to exit() if
-                // using a global io_service object. An additional call:
-                //
-                //   io_service.notify_fork(boost::asio::io_service::fork_prepare);
-                //
-                // should also precede the second fork().
-                exit(0);
-            }
+                exit(0);                                    // We're in the parent process and need to exit.
             else
             {
                 syslog(LOG_ERR | LOG_USER, "First fork failed: %m");
@@ -265,28 +243,17 @@ int main()
             }
         }
 
-        // Make the process a new session leader. This detaches it from the
-        // terminal.
+        // Make the process a new session leader. This detaches it from the terminal.
         setsid();
 
-        // A process inherits its working directory from its parent. This could be
-        // on a mounted filesystem, which means that the running daemon would
-        // prevent this filesystem from being unmounted. Changing to the root
-        // directory avoids this problem.
         chdir("/");
-
-        // The file mode creation mask is also inherited from the parent process.
-        // We don't want to restrict the permissions on files created by the
-        // daemon, so the mask is cleared.
         umask(0);
 
         // A second fork ensures the process cannot acquire a controlling terminal.
         if (pid_t pid = fork())
         {
             if (pid > 0)
-            {
                 exit(0);
-            }
             else
             {
                 syslog(LOG_ERR | LOG_USER, "Second fork failed: %m");
@@ -294,8 +261,7 @@ int main()
             }
         }
 
-        // Close the standard streams. This decouples the daemon from the terminal
-        // that started it.
+        // Close the standard streams. This decouples the daemon from the terminal that started it.
         close(0);
         close(1);
         close(2);
@@ -308,7 +274,7 @@ int main()
         }
 
         // Send standard output to a log file.
-        const char* output = "/tmp/asio.daemon.out";
+        const char* output = "/tmp/daemon.out";
         const int flags = O_WRONLY | O_CREAT | O_APPEND;
         const mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
         if (open(output, flags, mode) < 0)
@@ -329,14 +295,13 @@ int main()
         // that need to be private to the new process.
         io_service.notify_fork(boost::asio::io_service::fork_child);
 
-        // The io_service can now be used normally.
         syslog(LOG_INFO | LOG_USER, "Daemon started");
-        ::unlink(SOCK_PATH.c_str());
+        ::unlink(SOCK_PATH.c_str());                        // Remove previous binding
         sentry::server s(io_service, SOCK_PATH);
         io_service.run();
         syslog(LOG_INFO | LOG_USER, "Daemon stopped");
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
         syslog(LOG_ERR | LOG_USER, "Exception: %s", e.what());
         std::cerr << "Exception: " << e.what() << std::endl;

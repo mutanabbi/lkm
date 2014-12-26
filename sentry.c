@@ -24,7 +24,7 @@ void **find_sys_call_table(void) {
     {
         if (sys_close == ((void**)ptr)[__NR_close])
         {
-            printk(KERN_DEBUG "Found the sys_call_table!!!\n");
+            printk(KERN_DEBUG "sys_call_table was founded!\n");
             return (void **)ptr;
         }
     }
@@ -32,7 +32,7 @@ void **find_sys_call_table(void) {
 }
 
 
-// a pointer to store an original syscall
+// A pointer for storing an original syscall
 asmlinkage long (*origin_sys_execve)(
     const char __user *filename
   , const char __user *const __user *argv
@@ -43,13 +43,12 @@ asmlinkage long (*origin_sys_execve)(
 bool foo(const char* filename);
 
 
-asmlinkage long my_sys_execve(
+asmlinkage long proxy_sys_execve(
     const char __user *filename
   , const char __user *const __user *argv
   , const char __user *const __user *envp
   )
 {
-
     long ret = 0;
     bool is_permitted = false;
 
@@ -58,8 +57,6 @@ asmlinkage long my_sys_execve(
     printk("filename: %s\n", filename);
 
     is_permitted = foo(filename);
-    // printk("argv: %s\n", argv);
-    // printk("envp: %s\n", envp);
     printk(is_permitted ? "Permit\n" : "Deny\n");
     ret = is_permitted ? origin_sys_execve(filename, argv, envp) : -1;
     printk("My own execve stop\n");
@@ -68,7 +65,7 @@ asmlinkage long my_sys_execve(
 
 
 int32_t orig_offset = 0;
-void* callq_arg_addr = 0;
+void* callq_arg_addr = NULL;
 
 
 // A lot of exit points in this function below. No resources acquisition, please.
@@ -80,10 +77,10 @@ bool foo(const char* filename)
 
     struct path pwd = {0};
     struct path abs = {0};
-    char* dentry_buf = 0;
-    const char* abspath = 0;
+    char* dentry_buf = NULL;
+    const char* abspath = NULL;
 
-    struct socket *sock = 0;
+    struct socket *sock = NULL;
 
     int retval;
     char buf[MAX] = {0};
@@ -147,11 +144,11 @@ bool foo(const char* filename)
     memset(&iov, 0, sizeof(iov));
     len = strlen(abspath) + 1;
 
-    msg.msg_name = 0;
+    msg.msg_name = NULL;
     msg.msg_namelen = 0;
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
-    msg.msg_iov->iov_base = (char*)abspath;                 // dirty cast here. But I intend just send a message.
+    msg.msg_iov->iov_base = (char*)abspath;                 // Dirty cast here. But I intend just send a message.
                                                             // I hope, the kernel is smart ehough to not write to user buffer on sending :)
     msg.msg_iov->iov_len = len;
     msg.msg_control = NULL;
@@ -169,7 +166,7 @@ bool foo(const char* filename)
 
     // recvmsg
     msg.msg_iov->iov_len = MAX;
-    msg.msg_iov->iov_base = buf;                            // and here is over, writable buffer
+    msg.msg_iov->iov_base = buf;                            // And here is over, writable buffer
     retval = sock_recvmsg(sock, &msg, MAX, 0);
     printk("socket receive rc: %d\n", retval);
     if (retval < 0)
@@ -192,20 +189,24 @@ int init_module(void)
     int32_t offset = 0;
     unsigned long addr;
     unsigned long cr0;
-    //const char* p = 0;
     unsigned long n = 0;
-    void* callq_addr = 0;
-    void* sys_execve_addr = 0;
+    void* callq_addr = NULL;
+    void* sys_execve_addr = NULL;
     union {
         char buf[4];
         int32_t val;
     } a;
-    void* stub_execve = 0;
-    void** sys_call_table;
+    void* stub_execve = NULL;
+    void** sys_call_table = NULL;
 
     a.val = 0;
 
     sys_call_table = find_sys_call_table();
+    if (! sys_call_table)
+    {
+        printk("Can't find syscall table. Wrong kernel version? Check your System.map file.\n");
+        return -1;
+    }
 
     printk("__NR_close: %d\n", __NR_close);
     printk("execv index: %d\n", __NR_execve);
@@ -215,7 +216,7 @@ int init_module(void)
     printk("sizeof(void*): %lu\n", sizeof(void*));
     stub_execve = sys_call_table[__NR_execve];
 
-    /* dirty naive callq lookup
+    /* Dirty naive callq lookup. Just a possible workaround.
     p = (const char*)stub_execve;
     while ((const char)0xe8 != *p++ && n++ < 300);
     printk("opcode address: %pK\n", p);
@@ -234,7 +235,7 @@ int init_module(void)
     callq_addr = stub_execve + 100;
     if ((const char)0xe8 != *(const char*)callq_addr)
     {
-        printk(KERN_DEBUG "Cannot find callq instrction by expected offset\n");
+        printk(KERN_DEBUG "Cannot find callq instruction at an expected offset\n");
         return -1;
     }
     callq_arg_addr = callq_addr + 1;
@@ -247,10 +248,10 @@ int init_module(void)
     origin_sys_execve = sys_execve_addr;
     orig_offset = a.val;
 
-    printk("my_sys_execve address: %pK\n", my_sys_execve);
-    offset = (void*)my_sys_execve - (callq_addr + 5);
-    printk("my_sys_execve offset: %x (%*ph)\n", offset, (int)sizeof(offset), &offset);
-    printk("my_sys_execve address (doublecheck): %pK\n", callq_addr + 5 + offset);
+    printk("proxy_sys_execve address: %pK\n", proxy_sys_execve);
+    offset = (void*)proxy_sys_execve - (callq_addr + 5);
+    printk("proxy_sys_execve offset: %x (%*ph)\n", offset, (int)sizeof(offset), &offset);
+    printk("proxy_sys_execve address (doublecheck): %pK\n", callq_addr + 5 + offset);
 
     cr0 = read_cr0();
     write_cr0(cr0 & ~CR0_WP);

@@ -18,7 +18,6 @@ std::string hash(const std::string& filename)
     if (!file.is_open())
         throw std::runtime_error("Can't open file");
 
-
     while (file.read(buf, SZ))
         if (! SHA256_Update(&hash, buf, file.gcount()))
             throw std::runtime_error("Update");
