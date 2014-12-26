@@ -38,6 +38,7 @@ class session : public std::enable_shared_from_this<session>
     stream_protocol::socket m_socket;                       // The socket used to communicate with the client
     std::array<char, 1024> m_data;                          // Buffer used to store data received from the client
     const name2hash_map_type& m_name2hash_map;              // Avoid accidental changes in global map (make it const)
+    std::string m_filename;
 
 public:
     explicit session(boost::asio::io_service& io_service)
@@ -68,36 +69,53 @@ public:
     {
         if (!error)
         {
-            std::string filename(m_data.data());
+            m_filename.append(m_data.data(), bytes_transferred - 1);
+
+            // Message receiving still in progress (a message is too big for one msgrcv call)
+            if ('\0' != m_data.at(bytes_transferred - 1))
+            {
+                m_socket.async_read_some(
+                    boost::asio::buffer(m_data)
+                  , std::bind(
+                        &session::handle_read
+                      , shared_from_this()
+                      , std::placeholders::_1                   // error
+                      , std::placeholders::_2                   // bytes transfered
+                    )
+                );
+                return;
+            }
+
+            // Message receiving is done
             syslog(
                 LOG_INFO | LOG_USER
               , str(
-                    boost::format("received %1% bytes: %2%") % bytes_transferred % filename
+                    boost::format("received %1% bytes: %2%") % bytes_transferred % m_filename
                 ).c_str()
             );
             bool is_permitted = false;
-            const auto& it = m_name2hash_map.find(filename);
+            const auto& it = m_name2hash_map.find(m_filename);
             if (it != m_name2hash_map.end())
                 try
                 {
                     // check file was not changed after daemon start
-                    if (! (is_permitted = it->second == hash(filename)))
+                    if (! (is_permitted = it->second == hash(m_filename)))
                         syslog(
                             LOG_INFO | LOG_USER
-                          , str(boost::format("file `%1%' was changed after daemon start") % filename).c_str()
+                          , str(boost::format("file `%1%' was changed after daemon start") % m_filename).c_str()
                         );
                 }
                 catch (const std::runtime_error& ex)
                 {
                     syslog(
                         LOG_ERR | LOG_USER
-                      , str(boost::format("error during processing `%1%': %2%") % filename % ex.what()).c_str()
+                      , str(boost::format("error during processing `%1%': %2%") % m_filename % ex.what()).c_str()
                     );
                 }
             else
                 syslog(
                     LOG_INFO | LOG_USER
-                  , str(boost::format("file `%1%' isn't in whitelist") % filename).c_str()
+                  , str(boost::format("file `%1%' isn't in whitelist") % m_filename).c_str()
                 );
 
             boost::asio::async_write(
@@ -112,20 +130,10 @@ public:
         }
     }
 
-    void handle_write(const boost::system::error_code& error)
+    void handle_write(const boost::system::error_code& /*error*/)
     {
-        if (!error)
-        {
-            m_socket.async_read_some(
-                boost::asio::buffer(m_data)
-              , std::bind(
-                    &session::handle_read
-                  , shared_from_this()
-                  , std::placeholders::_1                   // error
-                  , std::placeholders::_2                   // bytes transfered
-                )
-            );
-        }
+        // Now sentry module closes connection after transmission is done
+        // so te session is going to die
     }
 };
 
