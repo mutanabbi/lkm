@@ -179,7 +179,7 @@ bool connect_and_ask(struct socket* sock, const char* filename)
 
     retval = sock_sendmsg(sock, &msg, len);
     printk("socket send rc: %d\n", retval);
-    if (!retval < 0)
+    if (retval >= 0)
     {
         // recvmsg
         msg.msg_iov->iov_len = MAX;
