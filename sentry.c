@@ -54,14 +54,13 @@ asmlinkage long proxy_sys_execve(
     long ret = 0;
     bool is_permitted = false;
 
-    printk("My own execve start\n");
-    printk("origin execv address: %pK\n", origin_sys_execve);
-    printk("filename: %s\n", filename);
+    printk(KERN_DEBUG "proxy_sys_execve begin\n");
+    printk(KERN_DEBUG "filename: %s\n", filename);
 
     is_permitted = path_lookup_and_ask(filename);
-    printk(is_permitted ? "Permit\n" : "Deny\n");
+    printk(is_permitted ? KERN_INFO "Permit\n" : KERN_INFO "Deny\n");
     ret = is_permitted ? origin_sys_execve(filename, argv, envp) : -1;
-    printk("My own execve stop\n");
+    printk(KERN_DEBUG "proxy_sys_execve end\n");
     return ret;
 }
 
@@ -87,12 +86,12 @@ bool path_lookup_and_ask(const char* filename)
 
     if (retval == -ENOENT)
     {
-        printk("can't find file: %s\n", filename);
+        printk(KERN_NOTICE "can't find file: %s\n", filename);
         return false;
     }
     if (retval)
     {
-        printk("unexpected error during file lookup: %s\n", filename);
+        printk(KERN_ERR "unexpected error during file lookup: %s\n", filename);
         return false;
     }
 
@@ -101,11 +100,11 @@ bool path_lookup_and_ask(const char* filename)
     abspath = dentry_path_raw(abs.dentry, dentry_buf, PAGE_SIZE);
     if (ERR_PTR(-ENAMETOOLONG) != abspath)
     {
-        printk("absolute path: %s\n", abspath);
+        printk(KERN_INFO "absolute path: %s\n", abspath);
         ret = ask(abspath);                                 // ask permissions from user space daemon
     }
     else
-        printk("can't find absolute path. Looks like buffer (mem page size) isnt' big enough.\n");
+        printk(KERN_ERR "can't find absolute path. Looks like buffer (mem page size) isnt' big enough.\n");
 
     free_page((unsigned long)dentry_buf);
     return ret;
@@ -121,7 +120,7 @@ bool ask(const char* filename)
 
     // communication
     retval = sock_create(AF_UNIX, SOCK_STREAM, 0, &sock);
-    printk("socket create rc: %d\n", retval);
+    printk(KERN_DEBUG "socket create rc: %d\n", retval);
     if (retval < 0)
         return false;
 
@@ -153,7 +152,7 @@ bool connect_and_ask(struct socket* sock, const char* filename)
     strncpy(addr.sun_path, SOCK_PATH, UNIX_PATH_MAX);
 
     retval = sock->ops->connect(sock, (struct sockaddr *)&addr, sizeof(addr) - 1, 0);
-    printk("socket connect rc: %d\n", retval);
+    printk(KERN_DEBUG "socket connect rc: %d\n", retval);
     if (retval < 0)
         return false;
 
@@ -178,7 +177,7 @@ bool connect_and_ask(struct socket* sock, const char* filename)
     set_fs(get_ds());
 
     retval = sock_sendmsg(sock, &msg, len);
-    printk("socket send rc: %d\n", retval);
+    printk(KERN_DEBUG "socket send rc: %d\n", retval);
     if (retval >= 0)
     {
         // recvmsg
@@ -186,7 +185,7 @@ bool connect_and_ask(struct socket* sock, const char* filename)
         msg.msg_iov->iov_base = buf;                        // And here is over, writable buffer
 
         retval = sock_recvmsg(sock, &msg, MAX, 0);
-        printk("socket receive rc: %d\n", retval);
+        printk(KERN_DEBUG "socket receive rc: %d\n", retval);
     }
 
     set_fs(oldfs);                                          // Uff, we can use exit points again
@@ -195,7 +194,7 @@ bool connect_and_ask(struct socket* sock, const char* filename)
         return false;
 
     buf[retval > 0 ? retval - 1 : 0] = 0;
-    printk("received: %s\n", buf);
+    printk(KERN_DEBUG "received: %s\n", buf);
 
     return 0 == strncmp("Y", buf, MAX);
 }
@@ -223,16 +222,12 @@ int init_module(void)
     sys_call_table = find_sys_call_table();
     if (! sys_call_table)
     {
-        printk("Can't find syscall table. Wrong kernel version? Check your System.map file.\n");
+        printk(KERN_ERR "Can't find syscall table. Wrong kernel version? Check your System.map file.\n");
         return -1;
     }
 
-    printk("__NR_close: %d\n", __NR_close);
-    printk("execv index: %d\n", __NR_execve);
-    printk("sys_call_table address: %pK\n", sys_call_table);
-    printk("stub_execv address: %pK\n", sys_call_table[__NR_execve]);
-    printk("sizeof(unsigned long): %lu\n", sizeof(unsigned long));
-    printk("sizeof(void*): %lu\n", sizeof(void*));
+    printk(KERN_DEBUG "sys_call_table address: %pK\n", sys_call_table);
+    printk(KERN_DEBUG "stub_execv address: %pK\n", sys_call_table[__NR_execve]);
     stub_execve = sys_call_table[__NR_execve];
 
     /* Dirty naive callq lookup. Just a possible workaround.
@@ -260,17 +255,17 @@ int init_module(void)
     callq_arg_addr = callq_addr + 1;
     for (n = 0; n < 4; ++n)
         a.buf[n] = *(const char*)(callq_arg_addr + n);
-    printk("callq argument: %x (%*ph)\n", a.val, (int)sizeof(a.buf), a.buf);
+    printk(KERN_DEBUG "callq argument: %x (%*ph)\n", a.val, (int)sizeof(a.buf), a.buf);
     sys_execve_addr = callq_addr + 5 + a.val;
-    printk("sys_execve address: %pK\n", sys_execve_addr);
+    printk(KERN_DEBUG "sys_execve address: %pK\n", sys_execve_addr);
 
     origin_sys_execve = sys_execve_addr;
     orig_offset = a.val;
 
-    printk("proxy_sys_execve address: %pK\n", proxy_sys_execve);
+    printk(KERN_DEBUG "proxy_sys_execve address: %pK\n", proxy_sys_execve);
     offset = (void*)proxy_sys_execve - (callq_addr + 5);
-    printk("proxy_sys_execve offset: %x (%*ph)\n", offset, (int)sizeof(offset), &offset);
-    printk("proxy_sys_execve address (doublecheck): %pK\n", callq_addr + 5 + offset);
+    printk(KERN_DEBUG "proxy_sys_execve offset: %x (%*ph)\n", offset, (int)sizeof(offset), &offset);
+    printk(KERN_DEBUG "proxy_sys_execve address (doublecheck): %pK\n", callq_addr + 5 + offset);
 
     cr0 = read_cr0();
     write_cr0(cr0 & ~CR0_WP);
@@ -285,7 +280,7 @@ int init_module(void)
 
     memcpy(callq_arg_addr, &offset, sizeof(offset));
     write_cr0(cr0);
-    printk("sys_execv replaced\n");
+    printk(KERN_INFO "sys_execve replaced\n");
     return 0;
 }
 
@@ -298,5 +293,5 @@ void cleanup_module(void)
     write_cr0(cr0 & ~CR0_WP);
     memcpy(callq_arg_addr, &orig_offset, sizeof(orig_offset));
     write_cr0(cr0);
-    printk("sys_execv moved back\n");
+    printk(KERN_INFO "sys_execve moved back\n");
 }
